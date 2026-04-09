@@ -1,0 +1,23 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+
+# Logs
+*.log
+log.txt
+
+# Environment / secrets
+.env
+.env.*
+.mcp.json
+
+# OS / editor
+.DS_Store
+
+# Claude Code local state
+.claude/
+
+# Host-specific setup script — contains real hostnames/IPs, not for the public repo
+setup-opengrok-tunnel-mcp.sh
