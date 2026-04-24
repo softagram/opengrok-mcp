@@ -4,6 +4,7 @@ import {
   formatSearchResponse,
   formatProjects,
   formatError,
+  buildSearchQuery,
   type OpenGrokSearchResponse,
 } from "../src/index.js";
 
@@ -175,4 +176,35 @@ test("formatError: omits Response body line when body is null/undefined", () => 
   const out = formatError(err);
   assert.match(out, /HTTP 404 Not Found/);
   assert.doesNotMatch(out, /Response body:/);
+});
+
+// ---- Phase 4: buildSearchQuery + multi-project ----
+
+test("buildSearchQuery: single project string emits one projects= entry", () => {
+  const qp = buildSearchQuery({ project: "demo", full: "needle" });
+  assert.deepEqual(qp.getAll("projects"), ["demo"]);
+  assert.equal(qp.get("full"), "needle");
+});
+
+test("buildSearchQuery: project array repeats projects= in order", () => {
+  const qp = buildSearchQuery({ project: ["proj-a", "proj-b"], full: "x" });
+  assert.deepEqual(qp.getAll("projects"), ["proj-a", "proj-b"]);
+});
+
+test("buildSearchQuery: empty-string project entries are skipped", () => {
+  const qp = buildSearchQuery({
+    project: ["proj-a", "", "proj-b", ""],
+    def: "Foo",
+  });
+  assert.deepEqual(qp.getAll("projects"), ["proj-a", "proj-b"]);
+});
+
+test("buildSearchQuery: omits start when undefined", () => {
+  const qp = buildSearchQuery({ project: "demo", full: "x" });
+  assert.equal(qp.has("start"), false);
+});
+
+test("buildSearchQuery: includes start when 0", () => {
+  const qp = buildSearchQuery({ project: "demo", full: "x", start: 0 });
+  assert.equal(qp.get("start"), "0");
 });

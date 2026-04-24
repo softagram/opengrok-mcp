@@ -46,8 +46,8 @@ export interface OpenGrokSearchResponse {
   results: Record<string, Array<{ line: string; lineNumber: string; tag: string | null }>>;
 }
 
-interface OpenGrokSearchParams {
-  project: string;
+export interface OpenGrokSearchParams {
+  project: string | string[];
   maxResults?: number;
   start?: number;
   full?: string;
@@ -55,6 +55,45 @@ interface OpenGrokSearchParams {
   symbol?: string;
   path?: string;
   type?: string;
+}
+
+// UNVERIFIED: OpenGrok REST API multi-project semantics — observed behavior is
+// that repeating the `projects` query parameter (`projects=a&projects=b`)
+// searches across all named projects, but this is not explicitly documented
+// in the public OpenGrok API reference. If a future OpenGrok release rejects
+// repeated keys or expects a different separator (CSV, etc.), this helper is
+// the single place to adapt.
+function appendProjects(qp: URLSearchParams, project: string | string[]): void {
+  const list = Array.isArray(project) ? project : [project];
+  for (const p of list) {
+    if (p && p.length > 0) {
+      qp.append("projects", p);
+    }
+  }
+}
+
+export function buildSearchQuery(params: OpenGrokSearchParams): URLSearchParams {
+  const {
+    project,
+    maxResults = DEFAULT_MAX_RESULTS,
+    start,
+    full,
+    def,
+    symbol,
+    path,
+    type,
+  } = params;
+
+  const qp = new URLSearchParams();
+  appendProjects(qp, project);
+  qp.set("maxresults", String(maxResults));
+  if (start !== undefined) qp.set("start", String(start));
+  if (full !== undefined) qp.set("full", full);
+  if (def !== undefined) qp.set("def", def);
+  if (symbol !== undefined) qp.set("symbol", symbol);
+  if (path !== undefined) qp.set("path", path);
+  if (type !== undefined) qp.set("type", type);
+  return qp;
 }
 
 export function formatSearchResponse(data: OpenGrokSearchResponse): string {
@@ -156,32 +195,10 @@ async function runTool(work: () => Promise<string>) {
 }
 
 async function search(params: OpenGrokSearchParams): Promise<string> {
-  const {
-    project,
-    maxResults = DEFAULT_MAX_RESULTS,
-    start,
-    full,
-    def,
-    symbol,
-    path,
-    type,
-  } = params;
-
-  const queryParams = new URLSearchParams({
-    projects: project,
-    maxresults: String(maxResults),
-  });
-  if (start !== undefined) queryParams.set("start", String(start));
-  if (full !== undefined) queryParams.set("full", full);
-  if (def !== undefined) queryParams.set("def", def);
-  if (symbol !== undefined) queryParams.set("symbol", symbol);
-  if (path !== undefined) queryParams.set("path", path);
-  if (type !== undefined) queryParams.set("type", type);
-
+  const queryParams = buildSearchQuery(params);
   const response = await client.get<OpenGrokSearchResponse>(
     `/api/v1/search?${queryParams.toString()}`
   );
-
   return formatSearchResponse(response.data);
 }
 
@@ -191,8 +208,10 @@ const server = new McpServer({
 });
 
 const projectParam = z
-  .string()
-  .describe("Name of the OpenGrok project to search in");
+  .union([z.string(), z.array(z.string()).min(1)])
+  .describe(
+    "Name of the OpenGrok project to search in, or an array of project names to search across multiple projects"
+  );
 
 const maxResultsParam = z
   .number()
