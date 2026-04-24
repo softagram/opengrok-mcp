@@ -444,12 +444,12 @@ const pathFilterParam = z
   .string()
   .optional()
   .describe(
-    "Optional path substring/pattern to restrict the search to matching files"
+    "Optional file-path filter (Lucene path expression). Supports substring matching and `*` / `?` wildcards, e.g. `src/auth/` or `*.test.ts`. Applied in addition to the main query."
   );
 
 server.tool(
   "opengrok_search_full_text",
-  "Search text inside files in OpenGrok",
+  "Free-text search inside file contents across one or more OpenGrok projects. Supports pagination via `start`, multi-project search by passing an array of project names, and an optional `pathFilter` to scope to a subdirectory. Result files are reranked by path relevance to the query.",
   {
     project: projectParam,
     query: z.string().describe("The text string to search for inside files"),
@@ -468,7 +468,7 @@ server.tool(
 
 server.tool(
   "opengrok_search_definition",
-  "Search for definitions (e.g., function or class names) in OpenGrok",
+  "Find where a function, class, type, or method is defined (uses OpenGrok's symbol index, not raw text). Supports multi-project search, pagination via `start`, and `pathFilter`. Use this instead of full-text search when you want declarations, not call sites.",
   {
     project: projectParam,
     definition: z.string().describe("Definition name to search for"),
@@ -487,7 +487,7 @@ server.tool(
 
 server.tool(
   "opengrok_search_symbol",
-  "Search for references to a symbol in OpenGrok",
+  "Find references / usages of a symbol (callers, importers, mentions in code). Complement to `opengrok_search_definition`. Supports multi-project search, pagination via `start`, and `pathFilter`.",
   {
     project: projectParam,
     symbol: z.string().describe("Symbol name to search for references"),
@@ -506,7 +506,7 @@ server.tool(
 
 server.tool(
   "opengrok_search_file_path",
-  "Search for files by path in OpenGrok",
+  "Find files by path or filename (e.g., locate every `Dockerfile` or every file under `src/auth/`). Supports multi-project search and pagination via `start`. The `filepath` argument is itself the path pattern, so no separate `pathFilter` is needed.",
   {
     project: projectParam,
     filepath: z.string().describe("Path or filename to search for"),
@@ -519,7 +519,7 @@ server.tool(
 
 server.tool(
   "opengrok_search_by_type",
-  "Search for files by type (e.g., python, cpp, java) in OpenGrok",
+  "Find files by language / file type (e.g., `python`, `cpp`, `java`). Useful for narrowing a broader investigation to one language. Supports multi-project search, pagination via `start`, and `pathFilter`.",
   {
     project: projectParam,
     fileType: z
@@ -537,7 +537,7 @@ server.tool(
 
 server.tool(
   "opengrok_get_file_content",
-  "Fetch the raw contents of a single file from OpenGrok, optionally sliced to a line range",
+  "Fetch the raw contents of a single file from an OpenGrok project, optionally sliced to a line range. Use this after a search to read the surrounding context of a hit without cloning the repo locally.",
   {
     project: z
       .string()
@@ -566,7 +566,7 @@ server.tool(
 
 server.tool(
   "opengrok_list_projects",
-  "List all available projects in OpenGrok",
+  "List every indexed project on the OpenGrok instance. Call this first to discover what's searchable; the returned names are valid values for the `project` argument of every search tool.",
   {},
   async () =>
     runTool(async () => {

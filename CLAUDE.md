@@ -39,16 +39,51 @@ The server always sends an `X-Forwarded-For: 127.0.0.1` header. This is intentio
 
 ## MCP tools
 
-All tools are namespaced with the `opengrok_` prefix (to avoid collisions with other MCP servers or legacy versions). Search tools take `project` and an optional `maxResults` integer in the range `1..500`, defaulting to 20. Each handler translates its schema field into the OpenGrok query parameter inside the closure.
+All tools are namespaced with the `opengrok_` prefix (to avoid collisions with other MCP servers or legacy versions). Each search-tool handler translates its schema field into the OpenGrok query parameter inside the closure.
 
-| Tool | Schema field | OpenGrok query param |
-|------|-------------|---------------------|
-| `opengrok_search_full_text` | `query` | `full` |
-| `opengrok_search_definition` | `definition` | `def` |
-| `opengrok_search_symbol` | `symbol` | `symbol` |
-| `opengrok_search_file_path` | `filepath` | `path` |
-| `opengrok_search_by_type` | `fileType` | `type` |
-| `opengrok_list_projects` | *(none)* | *(different endpoint)* |
+| Tool | Primary schema field | OpenGrok endpoint / param |
+|------|----------------------|---------------------------|
+| `opengrok_search_full_text` | `query` | `/api/v1/search?full=` |
+| `opengrok_search_definition` | `definition` | `/api/v1/search?def=` |
+| `opengrok_search_symbol` | `symbol` | `/api/v1/search?symbol=` |
+| `opengrok_search_file_path` | `filepath` | `/api/v1/search?path=` |
+| `opengrok_search_by_type` | `fileType` | `/api/v1/search?type=` |
+| `opengrok_get_file_content` | `filepath` | `/source/raw/{project}/{path}` |
+| `opengrok_list_projects` | *(none)* | `/api/v1/projects` |
+
+### Common search parameters
+
+Every search tool accepts these alongside its primary field:
+
+| Param | Type | Default | Wire mapping |
+|-------|------|---------|--------------|
+| `project` | `string \| string[]` | required | Repeated `projects=` per name (handled by `appendProjects`) |
+| `maxResults` | `1..500` int | `20` | `maxresults=` |
+| `start` | `>=0` int | omitted (server default 0) | `start=` — only sent when explicitly provided, so legacy single-page calls remain byte-identical on the wire |
+| `pathFilter` | `string` | omitted | `path=` (Lucene path expression). NOT exposed on `opengrok_search_file_path` (would shadow `filepath`) |
+
+Empty-string params (`""`) are dropped client-side in `buildSearchQuery` — never sent. This is uniform across `full`/`def`/`symbol`/`path`/`type`.
+
+### Result formatting
+
+`formatSearchResponse(data, fileOrder?)` is the single rendering pipeline:
+
+1. **Header** — `Found N result(s) in Tms (results startDocument–endDocument):` (or `No results found.` for empty).
+2. **File ordering** — when `fileOrder` is provided (Phase 2G reranker), iterate it first; remaining files appended in response order. Empty / undefined `fileOrder` preserves response order.
+3. **Near-duplicate collapse** — first pass counts cleaned+trimmed line text across the whole response; lines with `count >= 3 AND length >= 25` show once (annotated `[duplicated N× — first at file:line]`) and the other files emit a `(N line(s) identical to file:line hidden)` placeholder.
+4. **Path-relevance reranking** — `pathMatchScore(filePath, query)` weights query-token matches in the path; threaded by `search()` only for `full_text` / `definition` / `symbol` (not for `file_path` or `by_type`). Currently unconditional when query text exists; an opt-out parameter is on the roadmap (`improvement-ideas.txt` lines 178-189).
+
+### `opengrok_get_file_content`
+
+Single-project (`project: string`, not the multi-project union). `filepath` runs through `validateFilepath` which strips leading `/` and rejects bare `..` segments client-side. Optional `startLine` / `endLine` (1-based, inclusive) slice via `formatFileContent` — `endLine` past EOF is clamped silently; `startLine > total` returns the header-only EOF marker; `startLine > endLine` throws. axios is configured with `responseType: "text"` and `transformResponse: [(d) => d]` to defeat auto-JSON-parsing of file bodies.
+
+### Unverified HTTP assumptions
+
+Three inline `// UNVERIFIED:` comments mark behaviors validated only against the reference OpenGrok deployment, not exhaustively spec'd:
+
+- `src/index.ts:62` — `appendProjects` uses repeated `projects=` (vs. comma-separated). If multi-project searches return wrong results on a different OpenGrok build, swap to `qp.set("projects", list.join(","))`.
+- `src/index.ts:351` — `/source/raw/<project>/<path>` is the conventional raw-file endpoint. Some deployments mount under a different prefix or disable raw access; failures surface verbatim via the Phase 1E error-body inclusion.
+- `src/index.ts:377` — path-relevance rerank is a heuristic, not a measured improvement. Trivially reversible by removing the `rerankQuery` arg from the three search handlers.
 
 ## Error handling convention
 
