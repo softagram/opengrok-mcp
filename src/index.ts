@@ -49,6 +49,7 @@ export interface OpenGrokSearchResponse {
 interface OpenGrokSearchParams {
   project: string;
   maxResults?: number;
+  start?: number;
   full?: string;
   def?: string;
   symbol?: string;
@@ -62,7 +63,9 @@ export function formatSearchResponse(data: OpenGrokSearchResponse): string {
   }
 
   const lines: string[] = [];
-  lines.push(`Found ${data.resultCount} result(s) in ${data.time}ms:\n`);
+  lines.push(
+    `Found ${data.resultCount} result(s) in ${data.time}ms (results ${data.startDocument}–${data.endDocument}):\n`
+  );
 
   for (const [filePath, matches] of Object.entries(data.results)) {
     lines.push(`## ${filePath}`);
@@ -156,6 +159,7 @@ async function search(params: OpenGrokSearchParams): Promise<string> {
   const {
     project,
     maxResults = DEFAULT_MAX_RESULTS,
+    start,
     full,
     def,
     symbol,
@@ -167,6 +171,7 @@ async function search(params: OpenGrokSearchParams): Promise<string> {
     projects: project,
     maxresults: String(maxResults),
   });
+  if (start !== undefined) queryParams.set("start", String(start));
   if (full !== undefined) queryParams.set("full", full);
   if (def !== undefined) queryParams.set("def", def);
   if (symbol !== undefined) queryParams.set("symbol", symbol);
@@ -199,6 +204,15 @@ const maxResultsParam = z
     `Maximum number of results to return (default ${DEFAULT_MAX_RESULTS}, hard cap ${MAX_RESULTS_CAP})`
   );
 
+const startParam = z
+  .number()
+  .int()
+  .min(0)
+  .optional()
+  .describe(
+    "Zero-based offset of the first result to return (for paginating past maxResults)"
+  );
+
 server.tool(
   "opengrok_search_full_text",
   "Search text inside files in OpenGrok",
@@ -206,9 +220,10 @@ server.tool(
     project: projectParam,
     query: z.string().describe("The text string to search for inside files"),
     maxResults: maxResultsParam,
+    start: startParam,
   },
-  async ({ project, query, maxResults }) =>
-    runTool(() => search({ project, full: query, maxResults }))
+  async ({ project, query, maxResults, start }) =>
+    runTool(() => search({ project, full: query, maxResults, start }))
 );
 
 server.tool(
@@ -218,9 +233,10 @@ server.tool(
     project: projectParam,
     definition: z.string().describe("Definition name to search for"),
     maxResults: maxResultsParam,
+    start: startParam,
   },
-  async ({ project, definition, maxResults }) =>
-    runTool(() => search({ project, def: definition, maxResults }))
+  async ({ project, definition, maxResults, start }) =>
+    runTool(() => search({ project, def: definition, maxResults, start }))
 );
 
 server.tool(
@@ -230,9 +246,10 @@ server.tool(
     project: projectParam,
     symbol: z.string().describe("Symbol name to search for references"),
     maxResults: maxResultsParam,
+    start: startParam,
   },
-  async ({ project, symbol, maxResults }) =>
-    runTool(() => search({ project, symbol, maxResults }))
+  async ({ project, symbol, maxResults, start }) =>
+    runTool(() => search({ project, symbol, maxResults, start }))
 );
 
 server.tool(
@@ -242,9 +259,10 @@ server.tool(
     project: projectParam,
     filepath: z.string().describe("Path or filename to search for"),
     maxResults: maxResultsParam,
+    start: startParam,
   },
-  async ({ project, filepath, maxResults }) =>
-    runTool(() => search({ project, path: filepath, maxResults }))
+  async ({ project, filepath, maxResults, start }) =>
+    runTool(() => search({ project, path: filepath, maxResults, start }))
 );
 
 server.tool(
@@ -256,9 +274,10 @@ server.tool(
       .string()
       .describe("File type to search for (e.g., python, cpp, java)"),
     maxResults: maxResultsParam,
+    start: startParam,
   },
-  async ({ project, fileType, maxResults }) =>
-    runTool(() => search({ project, type: fileType, maxResults }))
+  async ({ project, fileType, maxResults, start }) =>
+    runTool(() => search({ project, type: fileType, maxResults, start }))
 );
 
 server.tool(

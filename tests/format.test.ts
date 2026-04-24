@@ -35,9 +35,23 @@ test("formatSearchResponse: decodes HTML entities from OpenGrok output", () => {
     },
   };
   const output = formatSearchResponse(data);
-  assert.match(output, /Found 1 result\(s\) in 12ms:/);
+  assert.match(output, /Found 1 result\(s\) in 12ms \(results 1–1\):/);
   assert.match(output, /## src\/foo\.py/);
   assert.match(output, /Line 42: if x < y && z > 0: return "ok"/);
+});
+
+test("formatSearchResponse: header reports startDocument–endDocument range", () => {
+  const data: OpenGrokSearchResponse = {
+    time: 7,
+    resultCount: 50,
+    startDocument: 21,
+    endDocument: 70,
+    results: {
+      "src/foo.ts": [{ line: "hit", lineNumber: "1", tag: null }],
+    },
+  };
+  const output = formatSearchResponse(data);
+  assert.match(output, /Found 50 result\(s\) in 7ms \(results 21–70\):/);
 });
 
 test("formatSearchResponse: converts <b> highlights to Markdown bold and includes tag", () => {
