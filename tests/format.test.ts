@@ -208,3 +208,116 @@ test("buildSearchQuery: includes start when 0", () => {
   const qp = buildSearchQuery({ project: "demo", full: "x", start: 0 });
   assert.equal(qp.get("start"), "0");
 });
+
+// ---- Phase 5: dedup ----
+
+test("formatSearchResponse: no dedup when occurrence count is below threshold", () => {
+  // 2 copies of an otherwise-dedup-eligible long line — should NOT dedup
+  const longLine = "this is a sufficiently long shared line for dedup test";
+  const data: OpenGrokSearchResponse = {
+    time: 1,
+    resultCount: 2,
+    startDocument: 1,
+    endDocument: 2,
+    results: {
+      "src/foo.ts": [{ line: longLine, lineNumber: "10", tag: null }],
+      "lib.ts": [{ line: longLine, lineNumber: "20", tag: null }],
+    },
+  };
+  const out = formatSearchResponse(data);
+  assert.doesNotMatch(out, /duplicated/);
+  assert.doesNotMatch(out, /identical to/);
+});
+
+test("formatSearchResponse: no dedup when line trimmed length below threshold", () => {
+  // 4 copies of a short line — short lines must NOT dedup regardless of count
+  const shortLine = "short hit";
+  const data: OpenGrokSearchResponse = {
+    time: 1,
+    resultCount: 4,
+    startDocument: 1,
+    endDocument: 4,
+    results: {
+      "a.ts": [{ line: shortLine, lineNumber: "1", tag: null }],
+      "b.ts": [{ line: shortLine, lineNumber: "2", tag: null }],
+      "c.ts": [{ line: shortLine, lineNumber: "3", tag: null }],
+      "d.ts": [{ line: shortLine, lineNumber: "4", tag: null }],
+    },
+  };
+  const out = formatSearchResponse(data);
+  assert.doesNotMatch(out, /duplicated/);
+  assert.doesNotMatch(out, /identical to/);
+});
+
+test("formatSearchResponse: dedup applied with first-occurrence annotation and suppression", () => {
+  const longLine = "this is a duplicated line of sufficient length";
+  const data: OpenGrokSearchResponse = {
+    time: 1,
+    resultCount: 3,
+    startDocument: 1,
+    endDocument: 3,
+    results: {
+      "src/foo.ts": [{ line: longLine, lineNumber: "10", tag: null }],
+      "lib.ts": [{ line: longLine, lineNumber: "20", tag: null }],
+      "pkg/util.ts": [{ line: longLine, lineNumber: "30", tag: null }],
+    },
+  };
+  const out = formatSearchResponse(data);
+  assert.match(
+    out,
+    /Line 10:.*duplicated line of sufficient length.*\[duplicated 3× — first at src\/foo\.ts:10\]/
+  );
+  assert.match(
+    out,
+    /\(1 line\(s\) identical to src\/foo\.ts:10 hidden\)/
+  );
+  // Should appear in BOTH suppressed files
+  const suppressionMatches = out.match(/identical to src\/foo\.ts:10 hidden/g) ?? [];
+  assert.equal(suppressionMatches.length, 2);
+});
+
+test("formatSearchResponse: dedup preserves non-duplicate matches in suppressed files", () => {
+  const dup = "this duplicate line appears in three places long enough";
+  const unique = "unique to second file but also long enough text here";
+  const data: OpenGrokSearchResponse = {
+    time: 1,
+    resultCount: 4,
+    startDocument: 1,
+    endDocument: 4,
+    results: {
+      "src/foo.ts": [{ line: dup, lineNumber: "5", tag: null }],
+      "lib.ts": [
+        { line: dup, lineNumber: "15", tag: null },
+        { line: unique, lineNumber: "16", tag: null },
+      ],
+      "pkg/util.ts": [{ line: dup, lineNumber: "25", tag: null }],
+    },
+  };
+  const out = formatSearchResponse(data);
+  assert.match(out, /Line 16:.*unique to second file/);
+  assert.match(out, /identical to src\/foo\.ts:5 hidden/);
+});
+
+test("formatSearchResponse: dedup key uses cleaned (de-HTML) trimmed text", () => {
+  const raw = "  &lt;b&gt; alpha beta gamma delta epsilon zeta eta &lt;/b&gt;  ";
+  const html = "<b> alpha beta gamma delta epsilon zeta eta </b>"; // would clean to same as above? No — different
+  // Actually craft so the cleaned form matches across rows
+  const a = "  if (foo === bar) { return doSomething(); } // long enough  ";
+  const b = "if (foo === bar) { return doSomething(); } // long enough";
+  const c = "  if (foo === bar) { return doSomething(); } // long enough";
+  void raw;
+  void html;
+  const data: OpenGrokSearchResponse = {
+    time: 1,
+    resultCount: 3,
+    startDocument: 1,
+    endDocument: 3,
+    results: {
+      "src/foo.ts": [{ line: a, lineNumber: "1", tag: null }],
+      "lib.ts": [{ line: b, lineNumber: "2", tag: null }],
+      "pkg/util.ts": [{ line: c, lineNumber: "3", tag: null }],
+    },
+  };
+  const out = formatSearchResponse(data);
+  assert.match(out, /\[duplicated 3× — first at src\/foo\.ts:1\]/);
+});

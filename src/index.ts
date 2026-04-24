@@ -8,6 +8,8 @@ import { fileURLToPath } from "node:url";
 
 const DEFAULT_MAX_RESULTS = 20;
 const MAX_RESULTS_CAP = 500;
+const DEDUP_MIN_COUNT = 3;
+const DEDUP_MIN_LINE_LEN = 25;
 
 let client: AxiosInstance;
 
@@ -96,9 +98,60 @@ export function buildSearchQuery(params: OpenGrokSearchParams): URLSearchParams 
   return qp;
 }
 
-export function formatSearchResponse(data: OpenGrokSearchResponse): string {
+function cleanMatchLine(line: string): string {
+  return line
+    .replace(/<b>/g, "**")
+    .replace(/<\/b>/g, "**")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&amp;/g, "&")
+    .replace(/&quot;/g, '"');
+}
+
+export function formatSearchResponse(
+  data: OpenGrokSearchResponse,
+  fileOrder?: string[]
+): string {
   if (data.resultCount === 0) {
     return "No results found.";
+  }
+
+  // Determine iteration order: fileOrder first (skipping unknowns), then any
+  // remaining results files in their natural object-iteration order.
+  const resultsKeys = Object.keys(data.results);
+  let orderedFiles: string[];
+  if (fileOrder && fileOrder.length > 0) {
+    const seen = new Set<string>();
+    orderedFiles = [];
+    for (const f of fileOrder) {
+      if (Object.prototype.hasOwnProperty.call(data.results, f) && !seen.has(f)) {
+        orderedFiles.push(f);
+        seen.add(f);
+      }
+    }
+    for (const f of resultsKeys) {
+      if (!seen.has(f)) {
+        orderedFiles.push(f);
+        seen.add(f);
+      }
+    }
+  } else {
+    orderedFiles = resultsKeys;
+  }
+
+  // Pass 1: count occurrences of each cleaned+trimmed match line and remember
+  // the first occurrence (file + raw lineNumber). Iterate in the same order
+  // we will emit, so "first" is well-defined relative to output order.
+  const counts = new Map<string, number>();
+  const firstOccurrence = new Map<string, { file: string; lineNumber: string }>();
+  for (const filePath of orderedFiles) {
+    for (const match of data.results[filePath]) {
+      const key = cleanMatchLine(match.line).trim();
+      counts.set(key, (counts.get(key) ?? 0) + 1);
+      if (!firstOccurrence.has(key)) {
+        firstOccurrence.set(key, { file: filePath, lineNumber: match.lineNumber });
+      }
+    }
   }
 
   const lines: string[] = [];
@@ -106,18 +159,44 @@ export function formatSearchResponse(data: OpenGrokSearchResponse): string {
     `Found ${data.resultCount} result(s) in ${data.time}ms (results ${data.startDocument}–${data.endDocument}):\n`
   );
 
-  for (const [filePath, matches] of Object.entries(data.results)) {
+  // Pass 2: emit. For dedup-eligible keys (count >= DEDUP_MIN_COUNT and
+  // trimmed length >= DEDUP_MIN_LINE_LEN), the first occurrence is annotated
+  // and subsequent occurrences in OTHER files are collapsed into a single
+  // suppression placeholder per file.
+  for (const filePath of orderedFiles) {
     lines.push(`## ${filePath}`);
-    for (const match of matches) {
-      const cleanLine = match.line
-        .replace(/<b>/g, "**")
-        .replace(/<\/b>/g, "**")
-        .replace(/&lt;/g, "<")
-        .replace(/&gt;/g, ">")
-        .replace(/&amp;/g, "&")
-        .replace(/&quot;/g, '"');
+    let suppressedHere = 0;
+    let firstSuppressedRef: { file: string; lineNumber: string } | null = null;
+    for (const match of data.results[filePath]) {
+      const cleaned = cleanMatchLine(match.line);
+      const key = cleaned.trim();
+      const total = counts.get(key) ?? 1;
+      const eligible = total >= DEDUP_MIN_COUNT && key.length >= DEDUP_MIN_LINE_LEN;
+      const first = firstOccurrence.get(key);
+      const isFirstHere = first && first.file === filePath && first.lineNumber === match.lineNumber;
       const tag = match.tag ? ` (${match.tag})` : "";
-      lines.push(`  Line ${match.lineNumber}${tag}: ${cleanLine.trim()}`);
+
+      if (eligible && first && !isFirstHere) {
+        // Suppress this match; track for the placeholder line.
+        suppressedHere += 1;
+        if (firstSuppressedRef === null) {
+          firstSuppressedRef = first;
+        }
+        continue;
+      }
+
+      if (eligible && isFirstHere) {
+        lines.push(
+          `  Line ${match.lineNumber}${tag}: ${key} [duplicated ${total}× — first at ${first!.file}:${first!.lineNumber}]`
+        );
+      } else {
+        lines.push(`  Line ${match.lineNumber}${tag}: ${key}`);
+      }
+    }
+    if (suppressedHere > 0 && firstSuppressedRef) {
+      lines.push(
+        `  (${suppressedHere} line(s) identical to ${firstSuppressedRef.file}:${firstSuppressedRef.lineNumber} hidden)`
+      );
     }
     lines.push("");
   }
