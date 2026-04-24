@@ -4,6 +4,10 @@ import {
   formatSearchResponse,
   formatProjects,
   formatError,
+  buildSearchQuery,
+  pathMatchScore,
+  formatFileContent,
+  validateFilepath,
   type OpenGrokSearchResponse,
 } from "../src/index.js";
 
@@ -35,9 +39,23 @@ test("formatSearchResponse: decodes HTML entities from OpenGrok output", () => {
     },
   };
   const output = formatSearchResponse(data);
-  assert.match(output, /Found 1 result\(s\) in 12ms:/);
+  assert.match(output, /Found 1 result\(s\) in 12ms \(results 1–1\):/);
   assert.match(output, /## src\/foo\.py/);
   assert.match(output, /Line 42: if x < y && z > 0: return "ok"/);
+});
+
+test("formatSearchResponse: header reports startDocument–endDocument range", () => {
+  const data: OpenGrokSearchResponse = {
+    time: 7,
+    resultCount: 50,
+    startDocument: 21,
+    endDocument: 70,
+    results: {
+      "src/foo.ts": [{ line: "hit", lineNumber: "1", tag: null }],
+    },
+  };
+  const output = formatSearchResponse(data);
+  assert.match(output, /Found 50 result\(s\) in 7ms \(results 21–70\):/);
 });
 
 test("formatSearchResponse: converts <b> highlights to Markdown bold and includes tag", () => {
@@ -104,4 +122,409 @@ test("formatError: formats a generic Error instance", () => {
 
 test("formatError: formats a non-Error thrown value", () => {
   assert.equal(formatError("string fail"), "OpenGrok request failed: string fail");
+});
+
+// ---- Phase 1: error body snippet ----
+
+import axios from "axios";
+
+function makeAxiosError(status: number, statusText: string, data: unknown) {
+  const err = new axios.AxiosError(
+    `Request failed with status code ${status}`,
+    "ERR_BAD_REQUEST",
+    undefined,
+    null,
+    {
+      status,
+      statusText,
+      data,
+      headers: {},
+      config: {} as never,
+    } as never
+  );
+  return err;
+}
+
+test("formatError: appends short string body verbatim under cap", () => {
+  const err = makeAxiosError(400, "Bad Request", "missing project parameter");
+  const out = formatError(err);
+  assert.match(out, /HTTP 400 Bad Request/);
+  assert.match(out, /Response body: missing project parameter/);
+});
+
+test("formatError: truncates long string body with `… (+N chars)` suffix", () => {
+  const body = "x".repeat(800);
+  const err = makeAxiosError(500, "Internal Server Error", body);
+  const out = formatError(err);
+  assert.match(out, /HTTP 500 Internal Server Error/);
+  // 500 chars retained, plus suffix indicating remainder
+  assert.match(out, /Response body: x{500}… \(\+300 chars\)/);
+});
+
+test("formatError: JSON-stringifies object body", () => {
+  const err = makeAxiosError(422, "Unprocessable Entity", { error: "nope", code: 7 });
+  const out = formatError(err);
+  assert.match(out, /Response body: \{"error":"nope","code":7\}/);
+});
+
+test("formatError: shows binary marker for Buffer body", () => {
+  const buf = Buffer.from([1, 2, 3, 4, 5, 6, 7, 8]);
+  const err = makeAxiosError(502, "Bad Gateway", buf);
+  const out = formatError(err);
+  assert.match(out, /Response body: <binary, 8 bytes>/);
+});
+
+test("formatError: omits Response body line when body is null/undefined", () => {
+  const err = makeAxiosError(404, "Not Found", undefined);
+  const out = formatError(err);
+  assert.match(out, /HTTP 404 Not Found/);
+  assert.doesNotMatch(out, /Response body:/);
+});
+
+// ---- Phase 4: buildSearchQuery + multi-project ----
+
+test("buildSearchQuery: single project string emits one projects= entry", () => {
+  const qp = buildSearchQuery({ project: "demo", full: "needle" });
+  assert.deepEqual(qp.getAll("projects"), ["demo"]);
+  assert.equal(qp.get("full"), "needle");
+});
+
+test("buildSearchQuery: project array repeats projects= in order", () => {
+  const qp = buildSearchQuery({ project: ["proj-a", "proj-b"], full: "x" });
+  assert.deepEqual(qp.getAll("projects"), ["proj-a", "proj-b"]);
+});
+
+test("buildSearchQuery: empty-string project entries are skipped", () => {
+  const qp = buildSearchQuery({
+    project: ["proj-a", "", "proj-b", ""],
+    def: "Foo",
+  });
+  assert.deepEqual(qp.getAll("projects"), ["proj-a", "proj-b"]);
+});
+
+test("buildSearchQuery: omits start when undefined", () => {
+  const qp = buildSearchQuery({ project: "demo", full: "x" });
+  assert.equal(qp.has("start"), false);
+});
+
+test("buildSearchQuery: includes start when 0", () => {
+  const qp = buildSearchQuery({ project: "demo", full: "x", start: 0 });
+  assert.equal(qp.get("start"), "0");
+});
+
+test("buildSearchQuery: empty-string string params are omitted", () => {
+  const qp = buildSearchQuery({
+    project: "demo",
+    full: "",
+    path: "",
+    def: "",
+    symbol: "",
+    type: "",
+  });
+  assert.equal(qp.has("full"), false);
+  assert.equal(qp.has("path"), false);
+  assert.equal(qp.has("def"), false);
+  assert.equal(qp.has("symbol"), false);
+  assert.equal(qp.has("type"), false);
+});
+
+// ---- Phase 5: dedup ----
+
+test("formatSearchResponse: no dedup when occurrence count is below threshold", () => {
+  // 2 copies of an otherwise-dedup-eligible long line — should NOT dedup
+  const longLine = "this is a sufficiently long shared line for dedup test";
+  const data: OpenGrokSearchResponse = {
+    time: 1,
+    resultCount: 2,
+    startDocument: 1,
+    endDocument: 2,
+    results: {
+      "src/foo.ts": [{ line: longLine, lineNumber: "10", tag: null }],
+      "lib.ts": [{ line: longLine, lineNumber: "20", tag: null }],
+    },
+  };
+  const out = formatSearchResponse(data);
+  assert.doesNotMatch(out, /duplicated/);
+  assert.doesNotMatch(out, /identical to/);
+});
+
+test("formatSearchResponse: no dedup when line trimmed length below threshold", () => {
+  // 4 copies of a short line — short lines must NOT dedup regardless of count
+  const shortLine = "short hit";
+  const data: OpenGrokSearchResponse = {
+    time: 1,
+    resultCount: 4,
+    startDocument: 1,
+    endDocument: 4,
+    results: {
+      "a.ts": [{ line: shortLine, lineNumber: "1", tag: null }],
+      "b.ts": [{ line: shortLine, lineNumber: "2", tag: null }],
+      "c.ts": [{ line: shortLine, lineNumber: "3", tag: null }],
+      "d.ts": [{ line: shortLine, lineNumber: "4", tag: null }],
+    },
+  };
+  const out = formatSearchResponse(data);
+  assert.doesNotMatch(out, /duplicated/);
+  assert.doesNotMatch(out, /identical to/);
+});
+
+test("formatSearchResponse: dedup applied with first-occurrence annotation and suppression", () => {
+  const longLine = "this is a duplicated line of sufficient length";
+  const data: OpenGrokSearchResponse = {
+    time: 1,
+    resultCount: 3,
+    startDocument: 1,
+    endDocument: 3,
+    results: {
+      "src/foo.ts": [{ line: longLine, lineNumber: "10", tag: null }],
+      "lib.ts": [{ line: longLine, lineNumber: "20", tag: null }],
+      "pkg/util.ts": [{ line: longLine, lineNumber: "30", tag: null }],
+    },
+  };
+  const out = formatSearchResponse(data);
+  assert.match(
+    out,
+    /Line 10:.*duplicated line of sufficient length.*\[duplicated 3× — first at src\/foo\.ts:10\]/
+  );
+  assert.match(
+    out,
+    /\(1 line\(s\) identical to src\/foo\.ts:10 hidden\)/
+  );
+  // Should appear in BOTH suppressed files
+  const suppressionMatches = out.match(/identical to src\/foo\.ts:10 hidden/g) ?? [];
+  assert.equal(suppressionMatches.length, 2);
+});
+
+test("formatSearchResponse: dedup preserves non-duplicate matches in suppressed files", () => {
+  const dup = "this duplicate line appears in three places long enough";
+  const unique = "unique to second file but also long enough text here";
+  const data: OpenGrokSearchResponse = {
+    time: 1,
+    resultCount: 4,
+    startDocument: 1,
+    endDocument: 4,
+    results: {
+      "src/foo.ts": [{ line: dup, lineNumber: "5", tag: null }],
+      "lib.ts": [
+        { line: dup, lineNumber: "15", tag: null },
+        { line: unique, lineNumber: "16", tag: null },
+      ],
+      "pkg/util.ts": [{ line: dup, lineNumber: "25", tag: null }],
+    },
+  };
+  const out = formatSearchResponse(data);
+  assert.match(out, /Line 16:.*unique to second file/);
+  assert.match(out, /identical to src\/foo\.ts:5 hidden/);
+});
+
+test("formatSearchResponse: dedup key uses cleaned (de-HTML) trimmed text", () => {
+  const raw = "  &lt;b&gt; alpha beta gamma delta epsilon zeta eta &lt;/b&gt;  ";
+  const html = "<b> alpha beta gamma delta epsilon zeta eta </b>"; // would clean to same as above? No — different
+  // Actually craft so the cleaned form matches across rows
+  const a = "  if (foo === bar) { return doSomething(); } // long enough  ";
+  const b = "if (foo === bar) { return doSomething(); } // long enough";
+  const c = "  if (foo === bar) { return doSomething(); } // long enough";
+  void raw;
+  void html;
+  const data: OpenGrokSearchResponse = {
+    time: 1,
+    resultCount: 3,
+    startDocument: 1,
+    endDocument: 3,
+    results: {
+      "src/foo.ts": [{ line: a, lineNumber: "1", tag: null }],
+      "lib.ts": [{ line: b, lineNumber: "2", tag: null }],
+      "pkg/util.ts": [{ line: c, lineNumber: "3", tag: null }],
+    },
+  };
+  const out = formatSearchResponse(data);
+  assert.match(out, /\[duplicated 3× — first at src\/foo\.ts:1\]/);
+});
+
+// ---- Phase 6: pathMatchScore + fileOrder ----
+
+test("pathMatchScore: empty query returns 0", () => {
+  assert.equal(pathMatchScore("src/foo.ts", ""), 0);
+});
+
+test("pathMatchScore: case-insensitive sum of matching token lengths", () => {
+  // tokens >= 3 chars: ["alpha", "beta"]
+  // path has both "alpha" and "BETA" → 5 + 4 = 9 (minus tiny path-length tiebreaker)
+  const path = "src/Alpha/BETA.ts";
+  const score = pathMatchScore(path, "alpha beta");
+  assert.equal(score, 9 - path.length / 10000);
+});
+
+test("pathMatchScore: ignores tokens shorter than 3 chars", () => {
+  // tokens >= 3: ["foo"] only — "is" and "a" are skipped
+  const path = "src/foo.ts";
+  const score = pathMatchScore(path, "is a foo");
+  assert.equal(score, 3 - path.length / 10000);
+});
+
+test("pathMatchScore: repeated query tokens do not double-count", () => {
+  const path = "src/auth/auth.ts";
+  const single = pathMatchScore(path, "auth");
+  const repeated = pathMatchScore(path, "auth auth");
+  assert.equal(repeated, single);
+});
+
+test("pathMatchScore: shorter path wins as tiebreaker", () => {
+  const long = "src/very/deeply/nested/path/foo.ts";
+  const short = "src/foo.ts";
+  const sLong = pathMatchScore(long, "foo");
+  const sShort = pathMatchScore(short, "foo");
+  assert.ok(sShort > sLong, `expected shorter path to score higher (${sShort} > ${sLong})`);
+});
+
+test("formatSearchResponse: respects fileOrder", () => {
+  const data: OpenGrokSearchResponse = {
+    time: 1,
+    resultCount: 3,
+    startDocument: 1,
+    endDocument: 3,
+    results: {
+      "a.ts": [{ line: "x", lineNumber: "1", tag: null }],
+      "b.ts": [{ line: "y", lineNumber: "2", tag: null }],
+      "c.ts": [{ line: "z", lineNumber: "3", tag: null }],
+    },
+  };
+  const out = formatSearchResponse(data, ["c.ts", "a.ts", "b.ts"]);
+  const cIdx = out.indexOf("## c.ts");
+  const aIdx = out.indexOf("## a.ts");
+  const bIdx = out.indexOf("## b.ts");
+  assert.ok(cIdx < aIdx && aIdx < bIdx, "files should appear in fileOrder");
+});
+
+test("formatSearchResponse: skips unknown files in fileOrder silently", () => {
+  const data: OpenGrokSearchResponse = {
+    time: 1,
+    resultCount: 1,
+    startDocument: 1,
+    endDocument: 1,
+    results: {
+      "a.ts": [{ line: "x", lineNumber: "1", tag: null }],
+    },
+  };
+  const out = formatSearchResponse(data, ["does-not-exist.ts", "a.ts"]);
+  assert.match(out, /## a\.ts/);
+  assert.doesNotMatch(out, /does-not-exist/);
+});
+
+test("formatSearchResponse: appends results-files not present in fileOrder at the end", () => {
+  const data: OpenGrokSearchResponse = {
+    time: 1,
+    resultCount: 3,
+    startDocument: 1,
+    endDocument: 3,
+    results: {
+      "a.ts": [{ line: "x", lineNumber: "1", tag: null }],
+      "b.ts": [{ line: "y", lineNumber: "2", tag: null }],
+      "c.ts": [{ line: "z", lineNumber: "3", tag: null }],
+    },
+  };
+  const out = formatSearchResponse(data, ["c.ts"]);
+  const cIdx = out.indexOf("## c.ts");
+  const aIdx = out.indexOf("## a.ts");
+  const bIdx = out.indexOf("## b.ts");
+  assert.ok(cIdx < aIdx && cIdx < bIdx, "c.ts (in fileOrder) comes first");
+  // a and b appended after, in their natural order
+  assert.ok(aIdx < bIdx);
+});
+
+test("formatSearchResponse: empty fileOrder behaves like undefined", () => {
+  const data: OpenGrokSearchResponse = {
+    time: 1,
+    resultCount: 2,
+    startDocument: 1,
+    endDocument: 2,
+    results: {
+      "a.ts": [{ line: "x", lineNumber: "1", tag: null }],
+      "b.ts": [{ line: "y", lineNumber: "2", tag: null }],
+    },
+  };
+  const withEmpty = formatSearchResponse(data, []);
+  const withUndef = formatSearchResponse(data);
+  assert.equal(withEmpty, withUndef);
+});
+
+// ---- Phase 7: formatFileContent ----
+
+test("formatFileContent: full file emits header with total line count and content", () => {
+  const text = "alpha\nbeta\ngamma\n";
+  const out = formatFileContent("demo", "src/foo.ts", text);
+  // 3 non-empty lines, but trailing newline doesn't add a 4th
+  assert.match(out, /^File: demo\/src\/foo\.ts {2}\(3 lines\)\n\n/);
+  assert.match(out, /alpha\nbeta\ngamma/);
+  // No code fences
+  assert.doesNotMatch(out, /```/);
+});
+
+test("formatFileContent: slices an inclusive line range", () => {
+  const text = "one\ntwo\nthree\nfour\nfive\n";
+  const out = formatFileContent("demo", "lib.ts", text, 2, 4);
+  assert.match(out, /^File: demo\/lib\.ts {2}\(lines 2–4 of 5\)\n\n/);
+  assert.match(out, /two\nthree\nfour/);
+  assert.doesNotMatch(out, /\bone\b/);
+  assert.doesNotMatch(out, /\bfive\b/);
+});
+
+test("formatFileContent: clamps endLine past EOF silently", () => {
+  const text = "a\nb\nc\n";
+  const out = formatFileContent("demo", "pkg/util.ts", text, 2, 99);
+  // total is 3, endLine clamped to 3
+  assert.match(out, /^File: demo\/pkg\/util\.ts {2}\(lines 2–3 of 3\)\n\n/);
+  assert.match(out, /b\nc/);
+});
+
+test("formatFileContent: returns header-only message when startLine past EOF", () => {
+  const text = "only\nthree\nlines\n";
+  const out = formatFileContent("demo", "src/foo.ts", text, 99);
+  assert.match(out, /File: demo\/src\/foo\.ts/);
+  assert.match(out, /\(3 lines\)/);
+  assert.match(out, /past end of file/i);
+});
+
+test("formatFileContent: handles CRLF line endings", () => {
+  const text = "alpha\r\nbeta\r\ngamma\r\n";
+  const out = formatFileContent("demo", "lib.ts", text, 2, 2);
+  assert.match(out, /\(lines 2–2 of 3\)/);
+  assert.match(out, /beta/);
+  assert.doesNotMatch(out, /alpha/);
+  assert.doesNotMatch(out, /gamma/);
+});
+
+test("formatFileContent: empty file is reported with empty-file marker", () => {
+  const out = formatFileContent("demo", "src/foo.ts", "");
+  assert.match(out, /\(empty file\)/);
+});
+
+test("formatFileContent: empty file with slice request returns empty-file marker", () => {
+  const out = formatFileContent("demo", "src/foo.ts", "", 5, 10);
+  assert.match(out, /\(empty file\)/);
+  assert.doesNotMatch(out, /lines 5/);
+  assert.doesNotMatch(out, /of 0/);
+});
+
+// ---- Phase 8: validateFilepath ----
+
+test("validateFilepath: strips leading slashes", () => {
+  assert.equal(validateFilepath("/src/foo.ts"), "src/foo.ts");
+  assert.equal(validateFilepath("///src/foo.ts"), "src/foo.ts");
+});
+
+test("validateFilepath: throws on .. segment", () => {
+  assert.throws(() => validateFilepath("src/../etc/passwd"), /\.\./);
+  assert.throws(() => validateFilepath("../etc/passwd"), /\.\./);
+  assert.throws(() => validateFilepath("foo/.."), /\.\./);
+});
+
+test("validateFilepath: allows hidden files starting with dot", () => {
+  assert.equal(validateFilepath(".gitignore"), ".gitignore");
+  assert.equal(validateFilepath("src/.env.example"), "src/.env.example");
+});
+
+test("validateFilepath: allows ..foo (not a traversal)", () => {
+  assert.equal(validateFilepath("src/..foo.ts"), "src/..foo.ts");
+  assert.equal(validateFilepath("foo..bar/baz"), "foo..bar/baz");
 });
