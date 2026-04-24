@@ -7,6 +7,7 @@ import {
   buildSearchQuery,
   pathMatchScore,
   formatFileContent,
+  validateFilepath,
   type OpenGrokSearchResponse,
 } from "../src/index.js";
 
@@ -211,6 +212,22 @@ test("buildSearchQuery: includes start when 0", () => {
   assert.equal(qp.get("start"), "0");
 });
 
+test("buildSearchQuery: empty-string string params are omitted", () => {
+  const qp = buildSearchQuery({
+    project: "demo",
+    full: "",
+    path: "",
+    def: "",
+    symbol: "",
+    type: "",
+  });
+  assert.equal(qp.has("full"), false);
+  assert.equal(qp.has("path"), false);
+  assert.equal(qp.has("def"), false);
+  assert.equal(qp.has("symbol"), false);
+  assert.equal(qp.has("type"), false);
+});
+
 // ---- Phase 5: dedup ----
 
 test("formatSearchResponse: no dedup when occurrence count is below threshold", () => {
@@ -345,6 +362,13 @@ test("pathMatchScore: ignores tokens shorter than 3 chars", () => {
   assert.equal(score, 3 - path.length / 10000);
 });
 
+test("pathMatchScore: repeated query tokens do not double-count", () => {
+  const path = "src/auth/auth.ts";
+  const single = pathMatchScore(path, "auth");
+  const repeated = pathMatchScore(path, "auth auth");
+  assert.equal(repeated, single);
+});
+
 test("pathMatchScore: shorter path wins as tiebreaker", () => {
   const long = "src/very/deeply/nested/path/foo.ts";
   const short = "src/foo.ts";
@@ -470,7 +494,37 @@ test("formatFileContent: handles CRLF line endings", () => {
   assert.doesNotMatch(out, /gamma/);
 });
 
-test("formatFileContent: empty file is reported as 0 lines", () => {
+test("formatFileContent: empty file is reported with empty-file marker", () => {
   const out = formatFileContent("demo", "src/foo.ts", "");
-  assert.match(out, /\(0 lines\)/);
+  assert.match(out, /\(empty file\)/);
+});
+
+test("formatFileContent: empty file with slice request returns empty-file marker", () => {
+  const out = formatFileContent("demo", "src/foo.ts", "", 5, 10);
+  assert.match(out, /\(empty file\)/);
+  assert.doesNotMatch(out, /lines 5/);
+  assert.doesNotMatch(out, /of 0/);
+});
+
+// ---- Phase 8: validateFilepath ----
+
+test("validateFilepath: strips leading slashes", () => {
+  assert.equal(validateFilepath("/src/foo.ts"), "src/foo.ts");
+  assert.equal(validateFilepath("///src/foo.ts"), "src/foo.ts");
+});
+
+test("validateFilepath: throws on .. segment", () => {
+  assert.throws(() => validateFilepath("src/../etc/passwd"), /\.\./);
+  assert.throws(() => validateFilepath("../etc/passwd"), /\.\./);
+  assert.throws(() => validateFilepath("foo/.."), /\.\./);
+});
+
+test("validateFilepath: allows hidden files starting with dot", () => {
+  assert.equal(validateFilepath(".gitignore"), ".gitignore");
+  assert.equal(validateFilepath("src/.env.example"), "src/.env.example");
+});
+
+test("validateFilepath: allows ..foo (not a traversal)", () => {
+  assert.equal(validateFilepath("src/..foo.ts"), "src/..foo.ts");
+  assert.equal(validateFilepath("foo..bar/baz"), "foo..bar/baz");
 });

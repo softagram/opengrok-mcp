@@ -90,11 +90,11 @@ export function buildSearchQuery(params: OpenGrokSearchParams): URLSearchParams 
   appendProjects(qp, project);
   qp.set("maxresults", String(maxResults));
   if (start !== undefined) qp.set("start", String(start));
-  if (full !== undefined) qp.set("full", full);
-  if (def !== undefined) qp.set("def", def);
-  if (symbol !== undefined) qp.set("symbol", symbol);
-  if (path !== undefined) qp.set("path", path);
-  if (type !== undefined) qp.set("type", type);
+  if (full !== undefined && full.length > 0) qp.set("full", full);
+  if (def !== undefined && def.length > 0) qp.set("def", def);
+  if (symbol !== undefined && symbol.length > 0) qp.set("symbol", symbol);
+  if (path !== undefined && path.length > 0) qp.set("path", path);
+  if (type !== undefined && type.length > 0) qp.set("type", type);
   return qp;
 }
 
@@ -105,10 +105,14 @@ export function pathMatchScore(filePath: string, query: string): number {
   if (!query || query.length === 0) {
     return 0;
   }
-  const tokens = query
-    .toLowerCase()
-    .split(PATH_TOKEN_SPLIT)
-    .filter((t) => t.length >= PATH_TOKEN_MIN_LEN);
+  const tokens = Array.from(
+    new Set(
+      query
+        .toLowerCase()
+        .split(PATH_TOKEN_SPLIT)
+        .filter((t) => t.length >= PATH_TOKEN_MIN_LEN)
+    )
+  );
   if (tokens.length === 0) {
     return 0;
   }
@@ -324,8 +328,13 @@ export function formatFileContent(
   const sliceRequested = startLine !== undefined || endLine !== undefined;
   const start = startLine ?? 1;
 
+  // Empty file: short-circuit before slice math, regardless of slice request.
+  if (total === 0) {
+    return `File: ${project}/${filepath}  (empty file)\n\n`;
+  }
+
   // startLine past EOF: header + EOF note, no content.
-  if (sliceRequested && total > 0 && start > total) {
+  if (sliceRequested && start > total) {
     return `File: ${project}/${filepath}  (${total} lines)\n\n(startLine ${start} is past end of file)`;
   }
 
@@ -338,6 +347,18 @@ export function formatFileContent(
   return `File: ${project}/${filepath}  (lines ${start}–${end} of ${total})\n\n${slice}`;
 }
 
+// Strips leading slashes so the URL path stays well-formed and rejects any
+// `..` path segment to prevent client-side traversal attempts. A bare segment
+// equal to ".." is the only thing rejected — names like "..foo" or "foo..bar"
+// are legitimate and pass through unchanged.
+export function validateFilepath(filepath: string): string {
+  const safePath = filepath.replace(/^\/+/, "");
+  if (safePath.split("/").some((seg) => seg === "..")) {
+    throw new Error("filepath must not contain '..' path segments");
+  }
+  return safePath;
+}
+
 async function getFileContent(params: {
   project: string;
   filepath: string;
@@ -345,9 +366,7 @@ async function getFileContent(params: {
   endLine?: number;
 }): Promise<string> {
   const { project, filepath, startLine, endLine } = params;
-  // Strip leading slashes so the URL path stays well-formed; encodeURI keeps
-  // sub-path slashes intact while escaping spaces and other unsafe chars.
-  const safePath = filepath.replace(/^\/+/, "");
+  const safePath = validateFilepath(filepath);
   // UNVERIFIED: the `/source/raw/<project>/<path>` endpoint is the standard
   // OpenGrok raw-source URL exposed by the web UI. It is not part of the
   // documented `/api/v1` REST surface, so behavior may differ between
