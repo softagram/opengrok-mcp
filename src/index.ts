@@ -98,6 +98,31 @@ export function buildSearchQuery(params: OpenGrokSearchParams): URLSearchParams 
   return qp;
 }
 
+const PATH_TOKEN_SPLIT = /[\s_\-./()\[\]{}<>"'`,;:]+/;
+const PATH_TOKEN_MIN_LEN = 3;
+
+export function pathMatchScore(filePath: string, query: string): number {
+  if (!query || query.length === 0) {
+    return 0;
+  }
+  const tokens = query
+    .toLowerCase()
+    .split(PATH_TOKEN_SPLIT)
+    .filter((t) => t.length >= PATH_TOKEN_MIN_LEN);
+  if (tokens.length === 0) {
+    return 0;
+  }
+  const haystack = filePath.toLowerCase();
+  let score = 0;
+  for (const t of tokens) {
+    if (haystack.includes(t)) {
+      score += t.length;
+    }
+  }
+  // Tiebreaker: shorter paths preferred.
+  return score - filePath.length / 10000;
+}
+
 function cleanMatchLine(line: string): string {
   return line
     .replace(/<b>/g, "**")
@@ -273,12 +298,30 @@ async function runTool(work: () => Promise<string>) {
   }
 }
 
-async function search(params: OpenGrokSearchParams): Promise<string> {
+async function search(
+  params: OpenGrokSearchParams,
+  rerankQuery?: string
+): Promise<string> {
   const queryParams = buildSearchQuery(params);
   const response = await client.get<OpenGrokSearchResponse>(
     `/api/v1/search?${queryParams.toString()}`
   );
-  return formatSearchResponse(response.data);
+
+  // UNVERIFIED: client-side rerank by file path relevance to the search text
+  // is a heuristic — OpenGrok already returns its own scoring order. We only
+  // override that order when the caller passed a non-empty rerankQuery (text,
+  // definition, or symbol search), assuming path-relevance is a useful
+  // tiebreaker for "needle in haystack" searches. Disable by passing
+  // rerankQuery="" or omitting it.
+  let fileOrder: string[] | undefined;
+  if (rerankQuery && rerankQuery.length > 0) {
+    const files = Object.keys(response.data.results);
+    const scored = files.map((f) => ({ f, s: pathMatchScore(f, rerankQuery) }));
+    scored.sort((a, b) => b.s - a.s);
+    fileOrder = scored.map((x) => x.f);
+  }
+
+  return formatSearchResponse(response.data, fileOrder);
 }
 
 const server = new McpServer({
@@ -330,7 +373,10 @@ server.tool(
   },
   async ({ project, query, maxResults, start, pathFilter }) =>
     runTool(() =>
-      search({ project, full: query, maxResults, start, path: pathFilter })
+      search(
+        { project, full: query, maxResults, start, path: pathFilter },
+        query
+      )
     )
 );
 
@@ -346,7 +392,10 @@ server.tool(
   },
   async ({ project, definition, maxResults, start, pathFilter }) =>
     runTool(() =>
-      search({ project, def: definition, maxResults, start, path: pathFilter })
+      search(
+        { project, def: definition, maxResults, start, path: pathFilter },
+        definition
+      )
     )
 );
 
@@ -362,7 +411,10 @@ server.tool(
   },
   async ({ project, symbol, maxResults, start, pathFilter }) =>
     runTool(() =>
-      search({ project, symbol, maxResults, start, path: pathFilter })
+      search(
+        { project, symbol, maxResults, start, path: pathFilter },
+        symbol
+      )
     )
 );
 

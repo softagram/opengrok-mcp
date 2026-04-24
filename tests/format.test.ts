@@ -5,6 +5,7 @@ import {
   formatProjects,
   formatError,
   buildSearchQuery,
+  pathMatchScore,
   type OpenGrokSearchResponse,
 } from "../src/index.js";
 
@@ -320,4 +321,104 @@ test("formatSearchResponse: dedup key uses cleaned (de-HTML) trimmed text", () =
   };
   const out = formatSearchResponse(data);
   assert.match(out, /\[duplicated 3× — first at src\/foo\.ts:1\]/);
+});
+
+// ---- Phase 6: pathMatchScore + fileOrder ----
+
+test("pathMatchScore: empty query returns 0", () => {
+  assert.equal(pathMatchScore("src/foo.ts", ""), 0);
+});
+
+test("pathMatchScore: case-insensitive sum of matching token lengths", () => {
+  // tokens >= 3 chars: ["alpha", "beta"]
+  // path has both "alpha" and "BETA" → 5 + 4 = 9 (minus tiny path-length tiebreaker)
+  const path = "src/Alpha/BETA.ts";
+  const score = pathMatchScore(path, "alpha beta");
+  assert.equal(score, 9 - path.length / 10000);
+});
+
+test("pathMatchScore: ignores tokens shorter than 3 chars", () => {
+  // tokens >= 3: ["foo"] only — "is" and "a" are skipped
+  const path = "src/foo.ts";
+  const score = pathMatchScore(path, "is a foo");
+  assert.equal(score, 3 - path.length / 10000);
+});
+
+test("pathMatchScore: shorter path wins as tiebreaker", () => {
+  const long = "src/very/deeply/nested/path/foo.ts";
+  const short = "src/foo.ts";
+  const sLong = pathMatchScore(long, "foo");
+  const sShort = pathMatchScore(short, "foo");
+  assert.ok(sShort > sLong, `expected shorter path to score higher (${sShort} > ${sLong})`);
+});
+
+test("formatSearchResponse: respects fileOrder", () => {
+  const data: OpenGrokSearchResponse = {
+    time: 1,
+    resultCount: 3,
+    startDocument: 1,
+    endDocument: 3,
+    results: {
+      "a.ts": [{ line: "x", lineNumber: "1", tag: null }],
+      "b.ts": [{ line: "y", lineNumber: "2", tag: null }],
+      "c.ts": [{ line: "z", lineNumber: "3", tag: null }],
+    },
+  };
+  const out = formatSearchResponse(data, ["c.ts", "a.ts", "b.ts"]);
+  const cIdx = out.indexOf("## c.ts");
+  const aIdx = out.indexOf("## a.ts");
+  const bIdx = out.indexOf("## b.ts");
+  assert.ok(cIdx < aIdx && aIdx < bIdx, "files should appear in fileOrder");
+});
+
+test("formatSearchResponse: skips unknown files in fileOrder silently", () => {
+  const data: OpenGrokSearchResponse = {
+    time: 1,
+    resultCount: 1,
+    startDocument: 1,
+    endDocument: 1,
+    results: {
+      "a.ts": [{ line: "x", lineNumber: "1", tag: null }],
+    },
+  };
+  const out = formatSearchResponse(data, ["does-not-exist.ts", "a.ts"]);
+  assert.match(out, /## a\.ts/);
+  assert.doesNotMatch(out, /does-not-exist/);
+});
+
+test("formatSearchResponse: appends results-files not present in fileOrder at the end", () => {
+  const data: OpenGrokSearchResponse = {
+    time: 1,
+    resultCount: 3,
+    startDocument: 1,
+    endDocument: 3,
+    results: {
+      "a.ts": [{ line: "x", lineNumber: "1", tag: null }],
+      "b.ts": [{ line: "y", lineNumber: "2", tag: null }],
+      "c.ts": [{ line: "z", lineNumber: "3", tag: null }],
+    },
+  };
+  const out = formatSearchResponse(data, ["c.ts"]);
+  const cIdx = out.indexOf("## c.ts");
+  const aIdx = out.indexOf("## a.ts");
+  const bIdx = out.indexOf("## b.ts");
+  assert.ok(cIdx < aIdx && cIdx < bIdx, "c.ts (in fileOrder) comes first");
+  // a and b appended after, in their natural order
+  assert.ok(aIdx < bIdx);
+});
+
+test("formatSearchResponse: empty fileOrder behaves like undefined", () => {
+  const data: OpenGrokSearchResponse = {
+    time: 1,
+    resultCount: 2,
+    startDocument: 1,
+    endDocument: 2,
+    results: {
+      "a.ts": [{ line: "x", lineNumber: "1", tag: null }],
+      "b.ts": [{ line: "y", lineNumber: "2", tag: null }],
+    },
+  };
+  const withEmpty = formatSearchResponse(data, []);
+  const withUndef = formatSearchResponse(data);
+  assert.equal(withEmpty, withUndef);
 });
