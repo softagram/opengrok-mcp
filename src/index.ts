@@ -213,6 +213,13 @@ const startParam = z
     "Zero-based offset of the first result to return (for paginating past maxResults)"
   );
 
+const pathFilterParam = z
+  .string()
+  .optional()
+  .describe(
+    "Optional path substring/pattern to restrict the search to matching files"
+  );
+
 server.tool(
   "opengrok_search_full_text",
   "Search text inside files in OpenGrok",
@@ -221,9 +228,12 @@ server.tool(
     query: z.string().describe("The text string to search for inside files"),
     maxResults: maxResultsParam,
     start: startParam,
+    pathFilter: pathFilterParam,
   },
-  async ({ project, query, maxResults, start }) =>
-    runTool(() => search({ project, full: query, maxResults, start }))
+  async ({ project, query, maxResults, start, pathFilter }) =>
+    runTool(() =>
+      search({ project, full: query, maxResults, start, path: pathFilter })
+    )
 );
 
 server.tool(
@@ -234,9 +244,12 @@ server.tool(
     definition: z.string().describe("Definition name to search for"),
     maxResults: maxResultsParam,
     start: startParam,
+    pathFilter: pathFilterParam,
   },
-  async ({ project, definition, maxResults, start }) =>
-    runTool(() => search({ project, def: definition, maxResults, start }))
+  async ({ project, definition, maxResults, start, pathFilter }) =>
+    runTool(() =>
+      search({ project, def: definition, maxResults, start, path: pathFilter })
+    )
 );
 
 server.tool(
@@ -247,9 +260,12 @@ server.tool(
     symbol: z.string().describe("Symbol name to search for references"),
     maxResults: maxResultsParam,
     start: startParam,
+    pathFilter: pathFilterParam,
   },
-  async ({ project, symbol, maxResults, start }) =>
-    runTool(() => search({ project, symbol, maxResults, start }))
+  async ({ project, symbol, maxResults, start, pathFilter }) =>
+    runTool(() =>
+      search({ project, symbol, maxResults, start, path: pathFilter })
+    )
 );
 
 server.tool(
@@ -275,9 +291,12 @@ server.tool(
       .describe("File type to search for (e.g., python, cpp, java)"),
     maxResults: maxResultsParam,
     start: startParam,
+    pathFilter: pathFilterParam,
   },
-  async ({ project, fileType, maxResults, start }) =>
-    runTool(() => search({ project, type: fileType, maxResults, start }))
+  async ({ project, fileType, maxResults, start, pathFilter }) =>
+    runTool(() =>
+      search({ project, type: fileType, maxResults, start, path: pathFilter })
+    )
 );
 
 server.tool(
