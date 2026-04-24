@@ -97,10 +97,38 @@ export function formatProjects(projects: string[]): string {
   return lines.join("\n");
 }
 
+const ERROR_BODY_CAP = 500;
+
+export function snippetFromBody(body: unknown): string | null {
+  if (body === null || body === undefined) {
+    return null;
+  }
+  if (Buffer.isBuffer(body)) {
+    return `<binary, ${body.length} bytes>`;
+  }
+  let text: string;
+  if (typeof body === "string") {
+    text = body;
+  } else {
+    try {
+      text = JSON.stringify(body);
+    } catch {
+      text = String(body);
+    }
+  }
+  if (text.length > ERROR_BODY_CAP) {
+    const remainder = text.length - ERROR_BODY_CAP;
+    return `${text.slice(0, ERROR_BODY_CAP)}… (+${remainder} chars)`;
+  }
+  return text;
+}
+
 export function formatError(err: unknown): string {
   if (axios.isAxiosError(err)) {
     if (err.response) {
-      return `OpenGrok request failed: HTTP ${err.response.status} ${err.response.statusText}`;
+      const base = `OpenGrok request failed: HTTP ${err.response.status} ${err.response.statusText}`;
+      const snippet = snippetFromBody(err.response.data);
+      return snippet === null ? base : `${base}\nResponse body: ${snippet}`;
     }
     if (err.code === "ECONNABORTED") {
       return "OpenGrok request timed out";

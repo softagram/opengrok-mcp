@@ -105,3 +105,60 @@ test("formatError: formats a generic Error instance", () => {
 test("formatError: formats a non-Error thrown value", () => {
   assert.equal(formatError("string fail"), "OpenGrok request failed: string fail");
 });
+
+// ---- Phase 1: error body snippet ----
+
+import axios from "axios";
+
+function makeAxiosError(status: number, statusText: string, data: unknown) {
+  const err = new axios.AxiosError(
+    `Request failed with status code ${status}`,
+    "ERR_BAD_REQUEST",
+    undefined,
+    null,
+    {
+      status,
+      statusText,
+      data,
+      headers: {},
+      config: {} as never,
+    } as never
+  );
+  return err;
+}
+
+test("formatError: appends short string body verbatim under cap", () => {
+  const err = makeAxiosError(400, "Bad Request", "missing project parameter");
+  const out = formatError(err);
+  assert.match(out, /HTTP 400 Bad Request/);
+  assert.match(out, /Response body: missing project parameter/);
+});
+
+test("formatError: truncates long string body with `… (+N chars)` suffix", () => {
+  const body = "x".repeat(800);
+  const err = makeAxiosError(500, "Internal Server Error", body);
+  const out = formatError(err);
+  assert.match(out, /HTTP 500 Internal Server Error/);
+  // 500 chars retained, plus suffix indicating remainder
+  assert.match(out, /Response body: x{500}… \(\+300 chars\)/);
+});
+
+test("formatError: JSON-stringifies object body", () => {
+  const err = makeAxiosError(422, "Unprocessable Entity", { error: "nope", code: 7 });
+  const out = formatError(err);
+  assert.match(out, /Response body: \{"error":"nope","code":7\}/);
+});
+
+test("formatError: shows binary marker for Buffer body", () => {
+  const buf = Buffer.from([1, 2, 3, 4, 5, 6, 7, 8]);
+  const err = makeAxiosError(502, "Bad Gateway", buf);
+  const out = formatError(err);
+  assert.match(out, /Response body: <binary, 8 bytes>/);
+});
+
+test("formatError: omits Response body line when body is null/undefined", () => {
+  const err = makeAxiosError(404, "Not Found", undefined);
+  const out = formatError(err);
+  assert.match(out, /HTTP 404 Not Found/);
+  assert.doesNotMatch(out, /Response body:/);
+});
