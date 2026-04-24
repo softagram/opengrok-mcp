@@ -298,6 +298,73 @@ async function runTool(work: () => Promise<string>) {
   }
 }
 
+export function formatFileContent(
+  project: string,
+  filepath: string,
+  text: string,
+  startLine?: number,
+  endLine?: number
+): string {
+  // Normalise CRLF to LF for splitting; leave the visible content as-is.
+  const normalised = text.replace(/\r\n/g, "\n");
+  // Drop a single trailing newline so that "alpha\nbeta\n" reports 2 lines, not 3.
+  const trimmed = normalised.endsWith("\n")
+    ? normalised.slice(0, -1)
+    : normalised;
+  const allLines = trimmed.length === 0 ? [] : trimmed.split("\n");
+  const total = allLines.length;
+
+  if (startLine !== undefined && startLine < 1) {
+    throw new Error("startLine must be >= 1");
+  }
+  if (startLine !== undefined && endLine !== undefined && endLine < startLine) {
+    throw new Error("endLine must be >= startLine");
+  }
+
+  const sliceRequested = startLine !== undefined || endLine !== undefined;
+  const start = startLine ?? 1;
+
+  // startLine past EOF: header + EOF note, no content.
+  if (sliceRequested && total > 0 && start > total) {
+    return `File: ${project}/${filepath}  (${total} lines)\n\n(startLine ${start} is past end of file)`;
+  }
+
+  if (!sliceRequested) {
+    return `File: ${project}/${filepath}  (${total} lines)\n\n${trimmed}`;
+  }
+
+  const end = Math.min(endLine ?? total, total);
+  const slice = allLines.slice(start - 1, end).join("\n");
+  return `File: ${project}/${filepath}  (lines ${start}–${end} of ${total})\n\n${slice}`;
+}
+
+async function getFileContent(params: {
+  project: string;
+  filepath: string;
+  startLine?: number;
+  endLine?: number;
+}): Promise<string> {
+  const { project, filepath, startLine, endLine } = params;
+  // Strip leading slashes so the URL path stays well-formed; encodeURI keeps
+  // sub-path slashes intact while escaping spaces and other unsafe chars.
+  const safePath = filepath.replace(/^\/+/, "");
+  // UNVERIFIED: the `/source/raw/<project>/<path>` endpoint is the standard
+  // OpenGrok raw-source URL exposed by the web UI. It is not part of the
+  // documented `/api/v1` REST surface, so behavior may differ between
+  // OpenGrok versions and behind some proxy configurations. We pin
+  // responseType to text and disable axios' default JSON transform so that
+  // arbitrary source files (including those that look like JSON) come back
+  // unmodified.
+  const response = await client.get<string>(
+    `/source/raw/${encodeURI(project)}/${encodeURI(safePath)}`,
+    {
+      responseType: "text",
+      transformResponse: [(d) => d],
+    }
+  );
+  return formatFileContent(project, filepath, response.data, startLine, endLine);
+}
+
 async function search(
   params: OpenGrokSearchParams,
   rerankQuery?: string
@@ -447,6 +514,35 @@ server.tool(
     runTool(() =>
       search({ project, type: fileType, maxResults, start, path: pathFilter })
     )
+);
+
+server.tool(
+  "opengrok_get_file_content",
+  "Fetch the raw contents of a single file from OpenGrok, optionally sliced to a line range",
+  {
+    project: z
+      .string()
+      .describe("Name of the OpenGrok project the file belongs to (single project only)"),
+    filepath: z
+      .string()
+      .describe("Project-relative path of the file to fetch"),
+    startLine: z
+      .number()
+      .int()
+      .min(1)
+      .optional()
+      .describe("First line to include (1-based, inclusive). Defaults to 1."),
+    endLine: z
+      .number()
+      .int()
+      .min(1)
+      .optional()
+      .describe(
+        "Last line to include (inclusive). Defaults to the end of the file; clamped to file length if larger."
+      ),
+  },
+  async ({ project, filepath, startLine, endLine }) =>
+    runTool(() => getFileContent({ project, filepath, startLine, endLine }))
 );
 
 server.tool(

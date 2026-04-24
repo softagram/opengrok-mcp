@@ -6,6 +6,7 @@ import {
   formatError,
   buildSearchQuery,
   pathMatchScore,
+  formatFileContent,
   type OpenGrokSearchResponse,
 } from "../src/index.js";
 
@@ -421,4 +422,55 @@ test("formatSearchResponse: empty fileOrder behaves like undefined", () => {
   const withEmpty = formatSearchResponse(data, []);
   const withUndef = formatSearchResponse(data);
   assert.equal(withEmpty, withUndef);
+});
+
+// ---- Phase 7: formatFileContent ----
+
+test("formatFileContent: full file emits header with total line count and content", () => {
+  const text = "alpha\nbeta\ngamma\n";
+  const out = formatFileContent("demo", "src/foo.ts", text);
+  // 3 non-empty lines, but trailing newline doesn't add a 4th
+  assert.match(out, /^File: demo\/src\/foo\.ts {2}\(3 lines\)\n\n/);
+  assert.match(out, /alpha\nbeta\ngamma/);
+  // No code fences
+  assert.doesNotMatch(out, /```/);
+});
+
+test("formatFileContent: slices an inclusive line range", () => {
+  const text = "one\ntwo\nthree\nfour\nfive\n";
+  const out = formatFileContent("demo", "lib.ts", text, 2, 4);
+  assert.match(out, /^File: demo\/lib\.ts {2}\(lines 2–4 of 5\)\n\n/);
+  assert.match(out, /two\nthree\nfour/);
+  assert.doesNotMatch(out, /\bone\b/);
+  assert.doesNotMatch(out, /\bfive\b/);
+});
+
+test("formatFileContent: clamps endLine past EOF silently", () => {
+  const text = "a\nb\nc\n";
+  const out = formatFileContent("demo", "pkg/util.ts", text, 2, 99);
+  // total is 3, endLine clamped to 3
+  assert.match(out, /^File: demo\/pkg\/util\.ts {2}\(lines 2–3 of 3\)\n\n/);
+  assert.match(out, /b\nc/);
+});
+
+test("formatFileContent: returns header-only message when startLine past EOF", () => {
+  const text = "only\nthree\nlines\n";
+  const out = formatFileContent("demo", "src/foo.ts", text, 99);
+  assert.match(out, /File: demo\/src\/foo\.ts/);
+  assert.match(out, /\(3 lines\)/);
+  assert.match(out, /past end of file/i);
+});
+
+test("formatFileContent: handles CRLF line endings", () => {
+  const text = "alpha\r\nbeta\r\ngamma\r\n";
+  const out = formatFileContent("demo", "lib.ts", text, 2, 2);
+  assert.match(out, /\(lines 2–2 of 3\)/);
+  assert.match(out, /beta/);
+  assert.doesNotMatch(out, /alpha/);
+  assert.doesNotMatch(out, /gamma/);
+});
+
+test("formatFileContent: empty file is reported as 0 lines", () => {
+  const out = formatFileContent("demo", "src/foo.ts", "");
+  assert.match(out, /\(0 lines\)/);
 });
