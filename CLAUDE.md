@@ -48,7 +48,7 @@ All tools are namespaced with the `opengrok_` prefix (to avoid collisions with o
 | `opengrok_search_symbol` | `symbol` | `/api/v1/search?symbol=` |
 | `opengrok_search_file_path` | `filepath` | `/api/v1/search?path=` |
 | `opengrok_search_by_type` | `fileType` | `/api/v1/search?type=` |
-| `opengrok_get_file_content` | `filepath` | `/source/raw/{project}/{path}` |
+| `opengrok_get_file_content` | `filepath` | `/raw/{project}/{path}` |
 | `opengrok_list_projects` | *(none)* | `/api/v1/projects` |
 
 ### Common search parameters
@@ -79,11 +79,12 @@ Single-project (`project: string`, not the multi-project union). `filepath` runs
 
 ### Unverified HTTP assumptions
 
-Three inline `// UNVERIFIED:` comments mark behaviors validated only against the reference OpenGrok deployment, not exhaustively spec'd:
+Two remaining `// UNVERIFIED:` comments mark behaviors not exhaustively spec'd:
 
 - `src/index.ts:62` — `appendProjects` uses repeated `projects=` (vs. comma-separated). If multi-project searches return wrong results on a different OpenGrok build, swap to `qp.set("projects", list.join(","))`.
-- `src/index.ts:351` — `/source/raw/<project>/<path>` is the conventional raw-file endpoint. Some deployments mount under a different prefix or disable raw access; failures surface verbatim via the Phase 1E error-body inclusion.
 - `src/index.ts:377` — path-relevance rerank is a heuristic, not a measured improvement. Trivially reversible by removing the `rerankQuery` arg from the three search handlers.
+
+The raw-file endpoint (`/raw/{project}/{path}`) was previously unverified and is now confirmed: `OPENGROK_URL` must point at the application root (the same base that `/api/v1/search` uses); there is no `/source/` prefix.
 
 ## Error handling convention
 

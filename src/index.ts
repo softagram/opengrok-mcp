@@ -367,15 +367,16 @@ async function getFileContent(params: {
 }): Promise<string> {
   const { project, filepath, startLine, endLine } = params;
   const safePath = validateFilepath(filepath);
-  // UNVERIFIED: the `/source/raw/<project>/<path>` endpoint is the standard
-  // OpenGrok raw-source URL exposed by the web UI. It is not part of the
-  // documented `/api/v1` REST surface, so behavior may differ between
-  // OpenGrok versions and behind some proxy configurations. We pin
-  // responseType to text and disable axios' default JSON transform so that
-  // arbitrary source files (including those that look like JSON) come back
+  // Raw-source endpoint: `/raw/<project>/<path>` (no `/source/` prefix).
+  // OPENGROK_URL must point at the application root (same base the search
+  // API uses). Verified against a real deployment — search uses
+  // `{base}/api/v1/search` and raw files live at `{base}/raw/{project}/{path}`.
+  // Not part of the documented `/api/v1` REST surface; behavior may differ
+  // behind some proxy configurations. responseType is pinned to text and the
+  // default JSON transform disabled so arbitrary source files come back
   // unmodified.
   const response = await client.get<string>(
-    `/source/raw/${encodeURI(project)}/${encodeURI(safePath)}`,
+    `/raw/${encodeURI(project)}/${encodeURI(safePath)}`,
     {
       responseType: "text",
       transformResponse: [(d) => d],
